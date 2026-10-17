@@ -726,21 +726,14 @@ with col_graph:
             unsafe_allow_html=True,
         )
     with g_hdr_right:
-        v_col1, v_col2 = st.columns([50, 50])
-        with v_col1:
-            graph_view_choice = st.selectbox(
-                "Graph View",
-                options=["Baseline Graph", "Simulated Fix (e06 Severed)"],
-                index=0 if not st.session_state.sim_fix_active else 1,
-                label_visibility="collapsed",
-                key="select_graph_view_mode",
-            )
-            sim_active = (graph_view_choice == "Simulated Fix (e06 Severed)")
-        with v_col2:
-            st.markdown(
-                '<input type="text" placeholder="🔍 Search nodes..." style="width: 100%; background: #0b1224; border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 6px; padding: 6px 10px; color: #fff; font-size: 0.78rem;"/>',
-                unsafe_allow_html=True,
-            )
+        graph_view_choice = st.selectbox(
+            "Graph View",
+            options=["Baseline Graph", "Simulated Fix (e06 Severed)"],
+            index=0 if not st.session_state.sim_fix_active else 1,
+            label_visibility="collapsed",
+            key="select_graph_view_mode",
+        )
+        sim_active = (graph_view_choice == "Simulated Fix (e06 Severed)")
 
     # Render Cinematic SVG Graph Canvas
     findings_list = st.session_state.baseline_result["findings"] if st.session_state.baseline_result else []
