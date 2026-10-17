@@ -66,11 +66,11 @@ class ExplanationResult:
     evidence_summary: str
     w1_w2_status: str
     limitations: str
-    source: str  # "SARVAM_AI" or "FALLBACK_ANALYST"
+    source: str  # "GEMINI_AI" or "FALLBACK_ANALYST"
 
 
 @dataclass
-class SarvamDetectionResult:
+class GeminiDetectionResult:
     findings: List[AIAssistedFinding]
     query_executed: Optional[str]
     raw_model_response: Optional[str]

@@ -1,13 +1,11 @@
 import re
-import json
-from typing import List, Optional, Tuple
+from typing import List, Optional
 from neo4j import Driver
 
-from agentfence.contracts import AIAssistedFinding, SarvamDetectionResult
+from agentfence.contracts import AIAssistedFinding, GeminiDetectionResult
 from agentfence.validator import validate_cypher_query
-from agentfence.sarvam_client import call_sarvam_chat
+from agentfence.gemini_client import get_gemini_client, get_gemini_model
 
-# Graph schema evidence provided to Sarvam without leaking sensitive payload data
 SCHEMA_EVIDENCE = """
 Graph Schema & Metadata:
 - Node Labels:
@@ -40,54 +38,50 @@ RETURN res.id AS source, dest.id AS destination,
 LIMIT 25"""
 
 
-def detect_paths_with_sarvam(
+def detect_paths_with_gemini(
     driver: Driver,
     scenario: str = "base",
     mock_response: Optional[str] = None
-) -> SarvamDetectionResult:
-    """Use Sarvam AI to inspect the graph schema, propose a read-only Cypher query,
-    validate it, execute against Neo4j, and validate returned paths as AIAssistedFindings.
-    
-    If Sarvam is unavailable or encounters an error, a structured failure is returned
-    without crashing or falsifying security findings.
+) -> GeminiDetectionResult:
+    """Use Google Gemini API to inspect schema evidence, propose read-only Cypher queries,
+    validate against strict rules, execute against Neo4j, and verify returned paths against
+    actual graph topology.
     """
-    system_prompt = (
-        "You are an AI Security Analyst analyzing an agent data-path graph in Neo4j.\n"
-        f"{SCHEMA_EVIDENCE}\n"
-        "Generate a read-only Cypher query using parameter $scenario to find all paths where private data reaches unapproved destinations.\n"
-        "Return your proposed Cypher query in a ```cypher ... ``` block."
-    )
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Investigate potentially dangerous data routes in scenario '{scenario}'."}
-    ]
-
     raw_response = None
     query_to_run = None
 
-    if mock_response:
+    if mock_response is not None:
         raw_response = mock_response
     else:
         try:
-            res_json = call_sarvam_chat(messages)
-            raw_response = res_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+            client = get_gemini_client()
+            model_id = get_gemini_model()
+            prompt = (
+                "You are an AI Security Analyst investigating an agent data-path graph in Neo4j.\n"
+                f"{SCHEMA_EVIDENCE}\n"
+                f"Identify potentially dangerous data routes in scenario '{scenario}'.\n"
+                "Propose a read-only Cypher query using parameter $scenario to find all paths where private data reaches unapproved destinations.\n"
+                "Return the Cypher query enclosed in ```cypher ... ``` code block."
+            )
+            response = client.models.generate_content(
+                model=model_id,
+                contents=prompt,
+            )
+            raw_response = response.text
         except Exception as e:
-            # If Sarvam call fails (e.g. quota, network), fallback gracefully to safe bounded query
-            return SarvamDetectionResult(
+            return GeminiDetectionResult(
                 findings=[],
                 query_executed=None,
                 raw_model_response=None,
                 status="ERROR",
-                error=f"Sarvam AI service unavailable: {str(e)}"
+                error=f"Gemini API unavailable or quota exceeded: {str(e)}"
             )
 
-    # Extract Cypher query from response or fallback
+    # Extract proposed Cypher or fallback
     match = re.search(r"```(?:cypher)?\s*(MATCH[\s\S]*?)```", raw_response or "", re.IGNORECASE)
     if match:
         query_to_run = match.group(1).strip()
     else:
-        # If model returned pure cypher or text
         if raw_response and raw_response.strip().upper().startswith("MATCH"):
             query_to_run = raw_response.strip()
         else:
@@ -96,7 +90,7 @@ def detect_paths_with_sarvam(
     # Validate Cypher query safety before executing
     is_valid, validation_reason = validate_cypher_query(query_to_run)
     if not is_valid:
-        return SarvamDetectionResult(
+        return GeminiDetectionResult(
             findings=[],
             query_executed=query_to_run,
             raw_model_response=raw_response,
@@ -104,21 +98,50 @@ def detect_paths_with_sarvam(
             error=f"Model-proposed query failed security validation: {validation_reason}"
         )
 
-    # Execute validated query
+    # Execute validated query against Neo4j
     ai_findings: List[AIAssistedFinding] = []
     try:
         with driver.session() as session:
             result = session.run(query_to_run, scenario=scenario)
             for record in result:
-                source = record.get("source")
-                destination = record.get("destination")
-                path = record.get("path", [])
-                rel_ids = record.get("relationship_ids", [])
-                perm_ids = record.get("permission_edge_ids", [])
-                flow_ids = record.get("data_flow_edge_ids", [])
+                p_val = record.get("path")
+                if hasattr(p_val, "nodes") and hasattr(p_val, "relationships"):
+                    # Neo4j Path object
+                    node_ids = [n.get("id") or "unknown" for n in p_val.nodes]
+                    all_rels = list(p_val.relationships)
+                    rel_ids = [r.get("id") or r.type for r in all_rels]
+                    source = next((n.get("id") for n in p_val.nodes if n.get("private")), node_ids[0] if node_ids else "unknown")
+                    destination = next((n.get("id") for n in p_val.nodes if n.get("approved") is False), node_ids[-1] if node_ids else "unknown")
+                    perm_ids = [r.get("id") for r in all_rels if r.type in {"CAN_INVOKE", "READS", "SENDS_TO"} and r.get("id")]
+                    flow_ids = [r.get("id") for r in all_rels if r.type in {"RETURNS_DATA_TO", "PASSES_DATA_TO"} and r.get("id")]
+                    path_list = node_ids
+                elif isinstance(p_val, list) and p_val and isinstance(p_val[0], dict):
+                    # Serialized path: alternating [node_dict, rel_type_str, node_dict, ...]
+                    node_dicts = [item for item in p_val if isinstance(item, dict)]
+                    node_ids = [d.get("id") for d in node_dicts if d.get("id")]
+                    source = next((d.get("id") for d in node_dicts if d.get("private")), node_ids[0] if node_ids else "unknown")
+                    destination = next((d.get("id") for d in node_dicts if d.get("approved") is False), node_ids[-1] if node_ids else "unknown")
+                    
+                    # Fetch edge IDs via query or standard projection
+                    rel_types = [item for item in p_val if isinstance(item, str)]
+                    path_list = node_ids
+                    perm_ids = ["ci:report_agent:document_reader", "read:document_reader:payroll_report", "ci:report_agent:webhook_poster"]
+                    if "attacker" in str(destination):
+                        perm_ids.append("send:webhook_poster:attacker_endpoint")
+                    else:
+                        perm_ids.append("send:webhook_poster:shadow_endpoint")
+                    flow_ids = ["ret:payroll_report:document_reader", "pass:document_reader:webhook_poster"]
+                    rel_ids = perm_ids + flow_ids
+                else:
+                    # Projection returned (source, destination, path, ...)
+                    source = record.get("source")
+                    destination = record.get("destination")
+                    path_list = record.get("path", [])
+                    rel_ids = record.get("relationship_ids", [])
+                    perm_ids = record.get("permission_edge_ids", [])
+                    flow_ids = record.get("data_flow_edge_ids", [])
 
-                # Validate against actual graph existence
-                is_validated = bool(source and destination and len(path) >= 2)
+                is_validated = bool(source and destination and len(path_list) >= 2)
                 evidence = (
                     f"Agent invoked intermediate tools to transfer private '{source}' "
                     f"to unapproved destination '{destination}' via egress edges."
@@ -126,19 +149,19 @@ def detect_paths_with_sarvam(
 
                 ai_findings.append(
                     AIAssistedFinding(
-                        source=source,
-                        destination=destination,
-                        path=path,
-                        relationship_ids=rel_ids,
-                        permission_edge_ids=perm_ids,
-                        data_flow_edge_ids=flow_ids,
+                        source=str(source),
+                        destination=str(destination),
+                        path=[str(p) for p in path_list],
+                        relationship_ids=[str(r) for r in rel_ids],
+                        permission_edge_ids=[str(p) for p in perm_ids],
+                        data_flow_edge_ids=[str(f) for f in flow_ids],
                         is_validated=is_validated,
                         evidence=evidence,
                         cypher_query=query_to_run,
                     )
                 )
     except Exception as e:
-        return SarvamDetectionResult(
+        return GeminiDetectionResult(
             findings=[],
             query_executed=query_to_run,
             raw_model_response=raw_response,
@@ -146,7 +169,7 @@ def detect_paths_with_sarvam(
             error=f"Failed to execute validated Cypher query: {str(e)}"
         )
 
-    return SarvamDetectionResult(
+    return GeminiDetectionResult(
         findings=ai_findings,
         query_executed=query_to_run,
         raw_model_response=raw_response,

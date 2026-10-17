@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 from agentfence.validator import validate_cypher_query
 from agentfence.contracts import Finding, CandidateResult, WorkflowResult
 from agentfence.explainer import explain_findings
-from agentfence.ai_detector import detect_paths_with_sarvam, SUGGESTED_SAFE_CYPHER
+from agentfence.ai_detector import detect_paths_with_gemini, SUGGESTED_SAFE_CYPHER
 
 
 def test_validator_safe_queries():
@@ -41,6 +41,11 @@ def test_validator_rejects_unsafe_queries():
     valid, reason = validate_cypher_query(q)
     assert valid is False
 
+    # Rejects multi-statements
+    q = "MATCH (n) RETURN n; MATCH (m) RETURN m"
+    valid, reason = validate_cypher_query(q)
+    assert valid is False
+
 
 def test_explainer_fallback_and_structure():
     findings = [
@@ -74,8 +79,8 @@ def test_explainer_fallback_and_structure():
         WorkflowResult(name="W2", passed=True, reason="W2 passed")
     ]
 
-    # Test fallback explanation when Sarvam is not used
-    exp = explain_findings(findings, candidates, workflows, use_sarvam=False)
+    # Test fallback explanation when Gemini is not used or unavailable
+    exp = explain_findings(findings, candidates, workflows, use_ai=False)
     assert exp.source == "FALLBACK_ANALYST"
     assert "HIGH RISK" in exp.risk_summary
     assert "ci:report_agent:webhook_poster" in exp.accepted_fix_explanation
@@ -83,13 +88,13 @@ def test_explainer_fallback_and_structure():
     assert exp.rejected_candidates_explanation[0]["candidate_id"] == "ci:report_agent:document_reader"
 
 
-def test_explainer_with_mock_sarvam_text():
+def test_explainer_with_mock_gemini_text():
     findings = []
     candidates = []
     workflows = []
-    exp = explain_findings(findings, candidates, workflows, mock_llm_text="Executive summary from Sarvam AI.")
-    assert exp.source == "SARVAM_AI"
-    assert "Executive summary from Sarvam AI" in exp.risk_summary
+    exp = explain_findings(findings, candidates, workflows, mock_llm_text="Executive summary from Gemini AI.")
+    assert exp.source == "GEMINI_AI"
+    assert "Executive summary from Gemini AI" in exp.risk_summary
 
 
 def test_ai_detector_mock_flow():
@@ -114,7 +119,7 @@ def test_ai_detector_mock_flow():
         "```"
     )
 
-    res = detect_paths_with_sarvam(driver, scenario="base", mock_response=mock_model_cypher)
+    res = detect_paths_with_gemini(driver, scenario="base", mock_response=mock_model_cypher)
     assert res.status == "SUCCESS"
     assert len(res.findings) == 1
     assert res.findings[0].is_validated is True
@@ -124,7 +129,17 @@ def test_ai_detector_mock_flow():
 def test_ai_detector_handles_rejected_query():
     driver = MagicMock()
     mock_bad_cypher = "```cypher\nMATCH (n) CREATE (m:Injected) RETURN m\n```"
-    res = detect_paths_with_sarvam(driver, scenario="base", mock_response=mock_bad_cypher)
+    res = detect_paths_with_gemini(driver, scenario="base", mock_response=mock_bad_cypher)
     assert res.status == "REJECTED_QUERY"
     assert len(res.findings) == 0
     assert "failed security validation" in res.error
+
+
+def test_ai_detector_handles_api_failure_gracefully():
+    driver = MagicMock()
+    # Force API failure when no key is set and no mock response provided
+    with patch("agentfence.ai_detector.get_gemini_client", side_effect=ValueError("No API key")):
+        res = detect_paths_with_gemini(driver, scenario="base")
+        assert res.status == "ERROR"
+        assert "unavailable" in res.error or "No API key" in res.error
+        assert len(res.findings) == 0
