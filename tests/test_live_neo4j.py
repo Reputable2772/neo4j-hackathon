@@ -68,6 +68,58 @@ def test_negative_fixture(driver):
 
 
 @skip_if_no_neo4j
+def test_simulated_removal_overlay_and_baseline_immutability(driver):
+    scenario = "test_base"
+    seed_graph(driver, scenario=scenario)
+
+    # Count baseline relationships before simulation
+    with driver.session() as s:
+        initial_rel_count = s.run(
+            "MATCH ()-[r {scenario: $scenario}]->() RETURN count(r) AS cnt",
+            scenario=scenario
+        ).single()["cnt"]
+
+    # Simulating removal of ci:report_agent:webhook_poster must result in 0 findings
+    removed_edge_ids = {"ci:report_agent:webhook_poster"}
+    findings = detect_paths(driver, scenario=scenario, removed_edge_ids=removed_edge_ids)
+    assert len(findings) == 0, f"Expected 0 findings when removing webhook poster, got {len(findings)}"
+
+    # Confirm baseline graph is completely unchanged (no edge was actually removed/mutated)
+    with driver.session() as s:
+        final_rel_count = s.run(
+            "MATCH ()-[r {scenario: $scenario}]->() RETURN count(r) AS cnt",
+            scenario=scenario
+        ).single()["cnt"]
+    assert final_rel_count == initial_rel_count == 10
+
+    # Without removal overlay, the two findings are still detected
+    base_findings = detect_paths(driver, scenario=scenario)
+    assert len(base_findings) == 2
+
+
+@skip_if_no_neo4j
+def test_idempotent_seed_behavior(driver):
+    scenario = "test_idempotent"
+    # Seed once
+    seed_graph(driver, scenario=scenario)
+    with driver.session() as s:
+        nodes_run1 = s.run("MATCH (n {scenario: $scenario}) RETURN count(n) AS cnt", scenario=scenario).single()["cnt"]
+        rels_run1 = s.run("MATCH ()-[r {scenario: $scenario}]->() RETURN count(r) AS cnt", scenario=scenario).single()["cnt"]
+
+    assert nodes_run1 == 8
+    assert rels_run1 == 10
+
+    # Seed twice
+    seed_graph(driver, scenario=scenario)
+    with driver.session() as s:
+        nodes_run2 = s.run("MATCH (n {scenario: $scenario}) RETURN count(n) AS cnt", scenario=scenario).single()["cnt"]
+        rels_run2 = s.run("MATCH ()-[r {scenario: $scenario}]->() RETURN count(r) AS cnt", scenario=scenario).single()["cnt"]
+
+    assert nodes_run2 == nodes_run1 == 8
+    assert rels_run2 == rels_run1 == 10
+
+
+@skip_if_no_neo4j
 def test_workflows_baseline(driver):
     scenario = "test_base"
     seed_graph(driver, scenario=scenario)

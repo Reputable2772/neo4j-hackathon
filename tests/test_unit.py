@@ -104,6 +104,23 @@ def test_detect_paths_unit():
     assert "ci:report_agent:webhook_poster" in findings[0].permission_edge_ids
 
 
+def test_detect_paths_unit_with_removed_overlay():
+    driver = MagicMock()
+    session = MagicMock()
+    driver.session.return_value.__enter__.return_value = session
+
+    # When ci:report_agent:webhook_poster is removed, Cypher returns empty list
+    session.run.return_value = []
+
+    findings = detect_paths(driver, scenario="base", removed_edge_ids={"ci:report_agent:webhook_poster"})
+    assert len(findings) == 0
+    # Verify session.run received the removed_edge_ids
+    session.run.assert_called_once()
+    _, kwargs = session.run.call_args
+    assert kwargs["scenario"] == "base"
+    assert "ci:report_agent:webhook_poster" in kwargs["removed_edge_ids"]
+
+
 def test_workflows_unit():
     driver = MagicMock()
     session = MagicMock()
