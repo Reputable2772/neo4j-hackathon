@@ -1,8 +1,30 @@
+# Environment variables & secrets
 .env
-.venv
+*.env
+!.env.example
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Pytest & Coverage
 .pytest_cache/
 .coverage
 htmlcov/
-result
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/
