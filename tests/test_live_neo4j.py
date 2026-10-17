@@ -124,10 +124,37 @@ def test_workflows_baseline(driver):
     scenario = "test_base"
     seed_graph(driver, scenario=scenario)
 
+    # 1. W1 and W2 pass on the base graph
     wf_results = check_workflows(driver, scenario=scenario)
     w_map = {w.name: w for w in wf_results}
     assert w_map["W1"].passed is True
     assert w_map["W2"].passed is True
+
+    # 2. Both pass after simulated removal of ci:report_agent:webhook_poster
+    wf_after_rem = check_workflows(driver, scenario=scenario, removed_edge_ids={"ci:report_agent:webhook_poster"})
+    w_map_rem = {w.name: w for w in wf_after_rem}
+    assert w_map_rem["W1"].passed is True
+    assert w_map_rem["W2"].passed is True
+
+    # 3. W1 fails if ci:report_agent:document_reader is removed
+    wf_no_ci_reader = check_workflows(driver, scenario=scenario, removed_edge_ids={"ci:report_agent:document_reader"})
+    assert not next(w for w in wf_no_ci_reader if w.name == "W1").passed
+
+    # 4. W1 fails if read:document_reader:payroll_report is removed
+    wf_no_read = check_workflows(driver, scenario=scenario, removed_edge_ids={"read:document_reader:payroll_report"})
+    assert not next(w for w in wf_no_read if w.name == "W1").passed
+
+    # 5. W2 fails if a required data-flow relationship is missing (e.g. ret:payroll_report:document_reader or pass:document_reader:email_sender)
+    wf_no_ret = check_workflows(driver, scenario=scenario, removed_edge_ids={"ret:payroll_report:document_reader"})
+    assert not next(w for w in wf_no_ret if w.name == "W2").passed
+
+    wf_no_pass = check_workflows(driver, scenario=scenario, removed_edge_ids={"pass:document_reader:email_sender"})
+    assert not next(w for w in wf_no_pass if w.name == "W2").passed
+
+    # 6. Baseline relationships are not mutated during these checks
+    with driver.session() as s:
+        rel_count = s.run("MATCH ()-[r {scenario: $scenario}]->() RETURN count(r) AS cnt", scenario=scenario).single()["cnt"]
+    assert rel_count == 10
 
 
 @skip_if_no_neo4j
