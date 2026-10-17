@@ -31,6 +31,7 @@
             else
               source .venv/bin/activate
             fi
+            export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH"
             export PYTHONPATH="$PWD:$PYTHONPATH"
             echo "AgentFence environment ready. Python: $(python --version)"
           '';

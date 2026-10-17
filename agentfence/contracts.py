@@ -42,3 +42,37 @@ class DecisionResult:
     removed_edge_ids: List[str]
     status: str
     persisted: bool
+
+
+@dataclass
+class AIAssistedFinding:
+    source: str
+    destination: str
+    path: List[str]
+    relationship_ids: List[str]
+    permission_edge_ids: List[str]
+    data_flow_edge_ids: List[str]
+    is_validated: bool
+    evidence: str
+    cypher_query: str
+
+
+@dataclass
+class ExplanationResult:
+    risk_summary: str
+    path_explanations: List[dict]
+    accepted_fix_explanation: str
+    rejected_candidates_explanation: List[dict]
+    evidence_summary: str
+    w1_w2_status: str
+    limitations: str
+    source: str  # "SARVAM_AI" or "FALLBACK_ANALYST"
+
+
+@dataclass
+class SarvamDetectionResult:
+    findings: List[AIAssistedFinding]
+    query_executed: Optional[str]
+    raw_model_response: Optional[str]
+    status: str
+    error: Optional[str] = None
